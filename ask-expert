@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Ask an expert agent powered by Kimi K2.5 + BM25 Agentic RAG.
+
+The agent searches textbook knowledge bases, retrieves relevant sections
+via BM25, and synthesizes an expert answer.
+
+Modes:
+  --domain auto     (DEFAULT) Searches ALL books, agent picks which are relevant
+  --domain guidance  Searches only the guidance book (faster, cheaper)
+
+Usage:
+    ask-expert -q "How does PN handle maneuvering targets?"              # auto mode
+    ask-expert --domain guidance -q "miss distance due to glint noise"    # single book
+    ask-expert -q "compare LQR and PN for missile autopilot" --verbose   # cross-book
+    ask-expert --rebuild-index                                           # rebuild all
+    ask-expert --domain guidance --rebuild-index                         # rebuild one
+"""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+
+from expert_index import (
+    get_or_build_index, get_or_build_global_index,
+    build_index, build_global_index, save_index,
+    discover_domains as _discover_domains,
+)
+from expert_agent import run_agent
+
+KB_ROOT = Path(os.environ.get("KB_ROOT", Path.home() / "knowledge-bases"))
+
+
+def discover_domains() -> dict[str, Path]:
+    return _discover_domains(KB_ROOT)
+
+
+def list_domains():
+    domains = discover_domains()
+    if not domains:
+        print(f"No knowledge bases found in {KB_ROOT}", file=sys.stderr)
+        return
+    print("Available domains:")
+    for name, path in domains.items():
+        md_count = len(list(path.glob("*.md")))
+        print(f"  {name}  ({md_count} files)")
+    print(f"\nUse --domain auto (default) to search all, or --domain <name> for one book.")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description="Ask an expert — Agentic RAG with Kimi K2.5",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Domains: " + ", ".join(discover_domains().keys()) or "(none found)"
+    )
+    p.add_argument("--domain", "-d", default="auto",
+                   help="'auto' (default) = search all books; or a specific domain name")
+    p.add_argument("--question", "-q",
+                   help="Question to ask the expert")
+    p.add_argument("--max-tokens", type=int, default=8192,
+                   help="Token budget for Kimi (reasoning + answer)")
+    p.add_argument("--verbose", "-v", action="store_true",
+                   help="Show tool calls on stderr")
+    p.add_argument("--rebuild-index", action="store_true",
+                   help="Force rebuild BM25 index (all domains if auto, else one)")
+    p.add_argument("--list-domains", action="store_true",
+                   help="List available knowledge base domains")
+
+    args = p.parse_args()
+
+    if args.list_domains:
+        list_domains()
+        return
+
+    domains = discover_domains()
+    is_auto = args.domain == "auto"
+
+    # ── Rebuild index ──
+    if args.rebuild_index:
+        if is_auto:
+            print("Rebuilding global index across all domains...", file=sys.stderr)
+            idx = build_global_index(KB_ROOT)
+            cache_dir = KB_ROOT / ".index"
+            save_index(idx, cache_dir / "_global_.bm25.pkl")
+            print(f"Global index built: {len(idx.chunks)} chunks from {len(domains)} domains",
+                  file=sys.stderr)
+        else:
+            if args.domain not in domains:
+                print(f"Unknown domain: '{args.domain}'", file=sys.stderr)
+                list_domains()
+                sys.exit(1)
+            kb_dir = domains[args.domain]
+            print(f"Rebuilding index for '{args.domain}'...", file=sys.stderr)
+            idx = build_index(kb_dir, args.domain)
+            cache_dir = kb_dir / ".index"
+            save_index(idx, cache_dir / f"{args.domain}.bm25.pkl")
+            print(f"Index built: {len(idx.chunks)} chunks", file=sys.stderr)
+        if not args.question:
+            return
+
+    # ── Need a question from here ──
+    if not args.question:
+        print("Error: --question / -q is required", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Load index ──
+    if is_auto:
+        idx = get_or_build_global_index(KB_ROOT)
+        if args.verbose:
+            domain_counts = {}
+            for c in idx.chunks:
+                domain_counts[c.domain] = domain_counts.get(c.domain, 0) + 1
+            summary = ", ".join(f"{d}: {n}" for d, n in sorted(domain_counts.items()))
+            print(f"Global index loaded: {len(idx.chunks)} chunks ({summary})",
+                  file=sys.stderr)
+    else:
+        if args.domain not in domains:
+            print(f"Unknown domain: '{args.domain}'", file=sys.stderr)
+            list_domains()
+            sys.exit(1)
+        kb_dir = domains[args.domain]
+        idx = get_or_build_index(kb_dir, args.domain)
+        if args.verbose:
+            print(f"Index loaded: {len(idx.chunks)} chunks from '{args.domain}'",
+                  file=sys.stderr)
+
+    # ── Run agent ──
+    answer = run_agent(
+        question=args.question,
+        index=idx,
+        domain=args.domain,
+        max_tokens=args.max_tokens,
+        verbose=args.verbose,
+        multi_domain=is_auto,
+    )
+
+    print(answer)
+
+
+if __name__ == "__main__":
+    main()
