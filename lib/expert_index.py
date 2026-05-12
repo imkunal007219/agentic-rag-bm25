@@ -30,6 +30,7 @@ class Chunk:
     text: str          # raw markdown text of this section
     domain: str = ""   # knowledge base name (e.g. "guidance")
     tokens: list = field(default_factory=list)  # tokenized words (for BM25)
+    content_type: str = "body"  # one of CONTENT_TYPE_WEIGHTS keys
 
 
 @dataclass
@@ -39,6 +40,65 @@ class ExpertIndex:
     chunks: list          # list of Chunk objects
     bm25: BM25Okapi       # the BM25 index
     source_hash: str      # hash of source files (to detect staleness)
+
+
+# ── Content-type tagging (Phase 2 chunker fix) ───────────────────
+#
+# Earlier eval runs showed BM25 ranking back-of-book index pages (single-
+# letter sections "A", "B", ..., "Z") above real body content because
+# index pages have artificially high keyword density (one occurrence per
+# indexed term). Tag each chunk with a content_type, then:
+#   - drop chunks with weight 0.0 at index-build time (they add nothing)
+#   - multiply BM25 scores by per-type weight at search time (down-weight
+#     reference / appendix / glossary content without removing it)
+#
+# Bumping CHUNKER_VERSION invalidates all cached indexes — change this
+# whenever you alter content-type logic or weights.
+
+CHUNKER_VERSION = "v3-content-types"
+
+CONTENT_TYPE_WEIGHTS: dict[str, float] = {
+    "body":              1.0,   # normal chapter content
+    "appendix":          0.7,   # real math (Lyapunov, Laplace, Runge-Kutta) — useful but secondary
+    "preamble":          0.5,   # pre-first-heading text
+    "reference":         0.4,   # Ch10 §10.1-10.3: software / implementation details
+    "references":        0.0,   # bibliography section — citations only
+    "glossary":          0.0,   # term lists, not explanatory
+    "index":             0.0,   # back-of-book index pages ("A", "B", ...) — pure noise
+    "appendix_divider":  0.0,   # "Appendix A" without subsection content
+    "front_matter":      0.0,   # author, ToC, copyright, dedication, preface — boilerplate
+}
+
+_INDEX_LETTER_RE = re.compile(r'^[A-Z]\s*$')
+_APPENDIX_DIVIDER_RE = re.compile(r'^Appendix [A-Z]\s*$')
+_APPENDIX_SECTION_RE = re.compile(r'^[A-Z]\.\d')  # A.1, B.2, ...
+
+
+def _detect_content_type(filename: str, heading: str) -> str:
+    """Classify a chunk by its heading + filename context."""
+    h = heading.strip()
+    # Everything in 00-Front-Matter.md is non-content: author bio, ToC,
+    # copyright, dedication, preface. Index it but weight it to zero so
+    # it never out-ranks real chapter content (the v1 failure mode where
+    # 'Contents' beat §1.1 on definitional queries).
+    if filename.startswith("00-Front-Matter"):
+        return "front_matter"
+    if _INDEX_LETTER_RE.match(h):
+        return "index"
+    if h.lower() == "glossary":
+        return "glossary"
+    if h.lower() == "references":
+        return "references"
+    if _APPENDIX_DIVIDER_RE.match(h):
+        return "appendix_divider"
+    if _APPENDIX_SECTION_RE.match(h):
+        return "appendix"
+    # Ch10 software / implementation chapters: useful but secondary
+    if filename.startswith("10-") and h.startswith("10."):
+        return "reference"
+    if h == "(preamble)":
+        return "preamble"
+    return "body"
 
 
 # ── Tokenizer ────────────────────────────────────────────────────
@@ -120,10 +180,13 @@ def chunk_file(filepath: Path) -> list[Chunk]:
     if heading and body and len(body.strip()) > 50:
         tokens = tokenize(body)
         if tokens:
-            chunks.append(Chunk(
-                file=fname, heading=heading,
-                chapter=chapter_title, text=body.strip(), tokens=tokens
-            ))
+            ctype = _detect_content_type(fname, heading)
+            if CONTENT_TYPE_WEIGHTS.get(ctype, 1.0) > 0.0:
+                chunks.append(Chunk(
+                    file=fname, heading=heading,
+                    chapter=chapter_title, text=body.strip(), tokens=tokens,
+                    content_type=ctype,
+                ))
 
     # Process heading+body pairs
     for i in range(1, len(parts), 2):
@@ -134,13 +197,20 @@ def chunk_file(filepath: Path) -> list[Chunk]:
         if len(body.strip()) < 50:
             continue
 
+        ctype = _detect_content_type(fname, heading)
+        # Drop zero-weight chunks at index-build time — they add no signal
+        # but inflate the corpus and shift IDF statistics.
+        if CONTENT_TYPE_WEIGHTS.get(ctype, 1.0) <= 0.0:
+            continue
+
         tokens = tokenize(body)
         if not tokens:
             continue
 
         chunks.append(Chunk(
             file=fname, heading=heading,
-            chapter=chapter_title, text=body.strip(), tokens=tokens
+            chapter=chapter_title, text=body.strip(), tokens=tokens,
+            content_type=ctype,
         ))
 
     return chunks
@@ -149,8 +219,11 @@ def chunk_file(filepath: Path) -> list[Chunk]:
 # ── Index builder ────────────────────────────────────────────────
 
 def _source_hash(kb_dir: Path) -> str:
-    """Hash all .md file sizes+mtimes to detect changes."""
+    """Hash all .md file sizes+mtimes — plus CHUNKER_VERSION so that
+    changes to chunking semantics auto-invalidate cached indexes even
+    when the source files are unchanged."""
     h = hashlib.md5()
+    h.update(CHUNKER_VERSION.encode())
     for f in sorted(kb_dir.glob('*.md')):
         stat = f.stat()
         h.update(f"{f.name}:{stat.st_size}:{stat.st_mtime_ns}".encode())
@@ -241,8 +314,10 @@ def get_or_build_index(kb_dir: str | Path, domain: str,
 # ── Global (multi-domain) index ──────────────────────────────────
 
 def _global_source_hash(kb_root: Path) -> str:
-    """Hash all .md files across all domain directories."""
+    """Hash all .md files across all domain directories, plus the
+    chunker version so a chunking-logic change invalidates the cache."""
     h = hashlib.md5()
+    h.update(CHUNKER_VERSION.encode())
     for domain_dir in sorted(kb_root.iterdir()):
         if not domain_dir.is_dir():
             continue
@@ -319,21 +394,31 @@ def get_or_build_global_index(kb_root: str | Path) -> ExpertIndex:
 
 def search_by_domain(index: ExpertIndex, query: str, domain: str,
                      top_k: int = 5) -> list[dict]:
-    """Search only chunks from a specific domain within a global index."""
+    """Search only chunks from a specific domain within a global index.
+
+    Applies content-type weights, same as search().
+    """
     query_tokens = tokenize(query)
     if not query_tokens:
         return []
 
-    scores = index.bm25.get_scores(query_tokens)
+    raw_scores = index.bm25.get_scores(query_tokens)
 
-    # Filter to only chunks from the target domain, then rank
+    # Weight by content type, then filter to target domain
+    weighted = [
+        raw_scores[i] * CONTENT_TYPE_WEIGHTS.get(
+            getattr(index.chunks[i], "content_type", "body"), 1.0
+        )
+        for i in range(len(raw_scores))
+    ]
+
     domain_indices = [i for i, c in enumerate(index.chunks) if c.domain == domain]
-    ranked = sorted(domain_indices, key=lambda i: scores[i], reverse=True)[:top_k]
+    ranked = sorted(domain_indices, key=lambda i: weighted[i], reverse=True)[:top_k]
 
     results = []
     for rank, idx in enumerate(ranked, 1):
         chunk = index.chunks[idx]
-        if scores[idx] <= 0:
+        if weighted[idx] <= 0:
             break
         results.append({
             'domain': chunk.domain,
@@ -341,7 +426,7 @@ def search_by_domain(index: ExpertIndex, query: str, domain: str,
             'chapter': chunk.chapter,
             'heading': chunk.heading,
             'text': chunk.text,
-            'score': round(float(scores[idx]), 3),
+            'score': round(float(weighted[idx]), 3),
             'rank': rank,
         })
     return results
@@ -352,6 +437,11 @@ def search_by_domain(index: ExpertIndex, query: str, domain: str,
 def search(index: ExpertIndex, query: str, top_k: int = 5) -> list[dict]:
     """Search the BM25 index and return top-K results.
 
+    BM25 scores are multiplied by the chunk's content-type weight before
+    ranking. This down-weights reference / glossary / appendix content
+    relative to normal chapter body — fixing the v1 failure mode where
+    back-of-book index pages out-ranked real definitions.
+
     Returns list of dicts:
         [{"file": str, "chapter": str, "heading": str,
           "text": str, "score": float, "rank": int}, ...]
@@ -360,15 +450,22 @@ def search(index: ExpertIndex, query: str, top_k: int = 5) -> list[dict]:
     if not query_tokens:
         return []
 
-    scores = index.bm25.get_scores(query_tokens)
+    raw_scores = index.bm25.get_scores(query_tokens)
 
-    # Get top-K indices sorted by score descending
-    ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k]
+    # Apply per-chunk content-type weight
+    weighted = [
+        raw_scores[i] * CONTENT_TYPE_WEIGHTS.get(
+            getattr(index.chunks[i], "content_type", "body"), 1.0
+        )
+        for i in range(len(raw_scores))
+    ]
+
+    ranked = sorted(range(len(weighted)), key=lambda i: weighted[i], reverse=True)[:top_k]
 
     results = []
     for rank, idx in enumerate(ranked, 1):
         chunk = index.chunks[idx]
-        if scores[idx] <= 0:
+        if weighted[idx] <= 0:
             break  # no more relevant results
         results.append({
             'domain': chunk.domain,
@@ -376,7 +473,7 @@ def search(index: ExpertIndex, query: str, top_k: int = 5) -> list[dict]:
             'chapter': chunk.chapter,
             'heading': chunk.heading,
             'text': chunk.text,
-            'score': round(float(scores[idx]), 3),
+            'score': round(float(weighted[idx]), 3),
             'rank': rank,
         })
 
