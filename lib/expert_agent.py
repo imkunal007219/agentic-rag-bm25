@@ -342,7 +342,8 @@ SINGLE_EXECUTORS = {
 
 def run_agent(question: str, index, domain: str,
               max_tokens: int = 8192, max_turns: int = 10,
-              verbose: bool = False, multi_domain: bool = False) -> str:
+              verbose: bool = False, multi_domain: bool = False,
+              return_trace: bool = False):
     """Run the agentic RAG loop.
 
     Args:
@@ -353,9 +354,13 @@ def run_agent(question: str, index, domain: str,
         max_turns: Max agent loop iterations (safety limit)
         verbose: Print tool calls to stderr
         multi_domain: If True, use search_all + search_domain tools
+        return_trace: If True, return (answer, trace_dict) instead of
+            just the answer. Trace contains tool_calls list, turn count,
+            and token usage. Used by the eval harness.
 
     Returns:
-        The agent's final answer as a string
+        If return_trace is False (default), the agent's final answer as
+        a string. If True, a tuple (answer_str, trace_dict).
     """
     client = OpenAI(
         api_key=os.environ.get("WORKER_API_KEY", os.environ.get("MOONSHOT_API_KEY", "")),
@@ -381,6 +386,20 @@ def run_agent(question: str, index, domain: str,
     total_in = 0
     total_out = 0
     tool_call_count = 0
+    trace_calls: list[dict] = []     # for return_trace
+    last_cached = 0                  # updated each turn from usage
+
+    def _ret(answer: str, turn_idx: int):
+        if not return_trace:
+            return answer
+        trace = {
+            "tool_calls": trace_calls,
+            "turns": turn_idx + 1,
+            "tokens_in": total_in,
+            "tokens_out": total_out,
+            "cached_tokens": last_cached,
+        }
+        return (answer, trace)
 
     for turn in range(max_turns):
         # Retry with backoff on 429 / overloaded errors
@@ -407,13 +426,19 @@ def run_agent(question: str, index, domain: str,
                           file=sys.stderr)
                     time.sleep(wait)
                     if attempt == 3:
-                        return f"[Kimi API rate-limited after 4 retries. Error: {err_str[:200]}]"
+                        return _ret(
+                            f"[Kimi API rate-limited after 4 retries. Error: {err_str[:200]}]",
+                            turn,
+                        )
                 else:
                     raise
 
         msg = resp.choices[0].message
         total_in += resp.usage.prompt_tokens
         total_out += resp.usage.completion_tokens
+        last_cached = (
+            getattr(getattr(resp.usage, 'prompt_tokens_details', None), 'cached_tokens', 0) or 0
+        )
 
         # If the model wants to call tools
         if resp.choices[0].finish_reason == "tool_calls" and msg.tool_calls:
@@ -433,6 +458,13 @@ def run_agent(question: str, index, domain: str,
                 else:
                     result = f"Unknown tool: {fn_name}"
 
+                # Record this tool call for the trace (truncate result preview)
+                trace_calls.append({
+                    "name": fn_name,
+                    "args": fn_args,
+                    "result_preview": (result[:300] if isinstance(result, str) else str(result)[:300]),
+                })
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -446,12 +478,14 @@ def run_agent(question: str, index, domain: str,
         if not answer:
             answer = "[Agent produced no answer — likely ran out of tokens during reasoning. Try a simpler question.]"
 
-        cached = getattr(getattr(resp.usage, 'prompt_tokens_details', None), 'cached_tokens', 0) or 0
         mode_tag = "multi" if multi_domain else domain
-        print(f"\n[expert-agent ({mode_tag}): {total_in} in ({cached} cached) / {total_out} out | "
+        print(f"\n[expert-agent ({mode_tag}): {total_in} in ({last_cached} cached) / {total_out} out | "
               f"{tool_call_count} tool calls | {turn + 1} turns]",
               file=sys.stderr)
 
-        return answer
+        return _ret(answer, turn)
 
-    return "[Agent exceeded maximum turns without producing an answer. Try a more specific question.]"
+    return _ret(
+        "[Agent exceeded maximum turns without producing an answer. Try a more specific question.]",
+        max_turns - 1,
+    )

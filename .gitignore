@@ -8,3 +8,7 @@ build/
 .pytest_cache/
 .index/
 *.pkl
+
+# Eval harness runtime artifacts (per-run, not source)
+evals/cache/
+evals/reports/
