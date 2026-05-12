@@ -6,8 +6,8 @@ Each line in `groundtruth.jsonl` is a single JSON object with the following fiel
 |---|---|---|---|
 | `id` | string | yes | Stable identifier, e.g. `q001`. Lets us reference specific questions in failure analysis without quoting the question text. |
 | `question` | string | yes | The user input given to the RAG system. Written as a real user would ask it. |
-| `expected_answer` | string \| null | yes | Reference answer for correctness scoring. `null` only for `no_answer` questions (the system should refuse). |
-| `expected_chunks` | string[] | yes | List of chunk identifiers in the form `"<file>#<heading>"`, matching the `(file, heading)` pair returned by `ExpertIndex.search()`. Empty array for `no_answer`. Used to score *retrieval* independently of *generation*. Section-level granularity (not file-level) — preserves the ability to distinguish "right chapter, wrong section" from "right section". |
+| `expected_answer` | string \| null | yes | Reference answer for correctness scoring. `null` only for `no_answer` questions (the system should refuse). For `ambiguous` questions, this field contains a description of the *expected meta-behaviour* — i.e. what a good response looks like, since no single concrete answer is "right". |
+| `expected_chunks` | string[] | yes | List of chunk identifiers in the form `"<file>#<heading>"`, matching the `(file, heading)` pair returned by `ExpertIndex.search()`. Empty array for `no_answer` and `ambiguous` (no specific retrieval is "correct" — the system's job is to surface ambiguity or refuse, not retrieve a definitive chunk). Used to score *retrieval* independently of *generation*. Section-level granularity (not file-level) — preserves the ability to distinguish "right chapter, wrong section" from "right section". |
 | `question_type` | enum | yes | One of: `single_hop`, `multi_hop`, `no_answer`, `ambiguous`. Lets us slice results by category. |
 | `notes` | string | no | Free-form authoring notes. Why the question was included, edge cases, hints for future-you. |
 
@@ -29,6 +29,7 @@ Each line in `groundtruth.jsonl` is a single JSON object with the following fiel
 
 A row is invalid if:
 - `expected_answer` is non-null and `question_type` is `no_answer`
-- `expected_chunks` is empty and `question_type` is not `no_answer`
+- `expected_answer` is null and `question_type` is `ambiguous` (ambiguous rows must describe expected meta-behaviour)
+- `expected_chunks` is empty and `question_type` is neither `no_answer` nor `ambiguous`
 - `id` is not unique within the file
 - Any required field is missing
