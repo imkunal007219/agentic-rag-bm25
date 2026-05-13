@@ -187,18 +187,27 @@ def _judge_correctness(sample: Sample, result: Result) -> tuple[float, str]:
 # ── Scorer: single_hop ───────────────────────────────────────────────
 
 def score_single_hop(sample: Sample, result: Result) -> Score:
-    """Single-hop: retrieval recall (rule-based) AND correctness (LLM)."""
+    """Single-hop: correctness (LLM-judge) is the primary pass gate.
+
+    Retrieval recall stays as a sub-metric in `components` because it's
+    useful for trace analysis (did the agent's retrieval surface the
+    labeled chunk?), but it is NOT a pass gate. Reason: multiple chunks
+    can validly answer the same question (e.g. q006 — the canonical
+    PN-philosophy sentence appears in both §2.2 and §2.5). Scoring on
+    recall alone punishes the agent for finding an equivalent chunk.
+    The LLM-judge sees the full answer + reference and is the right
+    arbiter of "did the system answer correctly?".
+    """
     recall = _retrieval_recall(sample.expected_chunks, result)
     correctness, rationale = _judge_correctness(sample, result)
-    # Combined pass: retrieved the right chunk AND answered substantively right
-    passed = recall >= 1.0 and correctness >= 0.7
-    value = (recall + correctness) / 2
+    passed = correctness >= 0.7
+    value = correctness
     return Score(
         sample_id=sample.id,
         question_type="single_hop",
         passed=passed,
         value=value,
-        rationale=f"recall={recall:.2f}, correctness={correctness:.2f}: {rationale}",
+        rationale=f"correctness={correctness:.2f} (recall={recall:.2f}): {rationale}",
         components={"retrieval_recall": recall, "correctness": correctness},
     )
 
