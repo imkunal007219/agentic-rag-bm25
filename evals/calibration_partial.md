@@ -88,6 +88,53 @@ LLM-as-judge central-tendency bias.
   multi_hop is mildly optimistic; ambiguous is judge-limited; avg-value is
   conservative across the board.**
 
+## Judge-v2 attempt (not shipped — regressed)
+
+A first attempt to fix the central-tendency bias re-wrote `_CORRECTNESS_PROMPT`
+and `_AMBIGUITY_PROMPT` with sharper bucket criteria, three calibration
+anchors, and an anti-hedging rule (*"if you cannot name a specific defect,
+score 1.0"*). The new judge was tested by re-scoring v5's cached agent
+answers against the same frozen hand-grades — zero new agent runs, zero
+Kimi tokens. See `calibration_judgev2_check.py`.
+
+**Result on the 18 v5 rows the grader hand-graded:**
+
+| Judge | Exact-match | Within-1 | Disagreement direction |
+|---|---:|---:|---|
+| judge-v1 | **67%** (12/18) | 100% | 5 judge-lower / 1 judge-higher |
+| judge-v2 | **61%** (11/18) | 100% | 3 judge-lower / 4 judge-higher |
+
+Five rows changed v1 -> v2: **2 toward the hand-grade, 3 away**.
+- Wins: q036 and q052 (clean 1.0 answers that v1 parked at 0.7 -> v2 lifted to 1.0).
+- Over-corrections: q007 (genuinely thin 0.7 -> v2 inflated to 1.0), q020
+  (real 0.4 with a Ch2 mischaracterization -> v2 lifted to 0.7), q029
+  (partial multi-sense surfacing of an ambiguous question -> v2 promoted to 1.0).
+
+The anti-hedging rule did its job *too* aggressively. *"If you cannot name a
+defect, score 1.0"* turns into a 1.0-default whenever the defect is subtle
+enough that the judge cannot articulate it in one rationale sentence. The
+central-tendency bias did not get fixed — it got *inverted partially*, and
+exact-match agreement regressed by one row.
+
+**Headline consequence:** the v5-judgev2 run scored 52/60 (86.7%) vs
+judge-v1's 51/60. That extra pass is q029 ambiguous, which the hand-grade
+puts at 0.5 — a false pass. **The truer v5 number remains 85.0%.**
+
+**Decision:** judge-v2 reverted; judge-v1 remains the active judge in
+`scorer.py`. Judge-v3 is a planned iteration that should:
+- Keep the 1.0-vs-0.7 sharpening (it did genuinely catch q036 / q052)
+- Replace the binary anti-hedging rule with a more graded one — e.g.,
+  *"0.7 means the answer reads as **thin or imprecise** even if no single
+  fact is missing"* — to recover the q007/q020/q029 cases without
+  reopening the 0.7-collapse.
+- Re-run this same `calibration_judgev2_check.py` against judge-v3.
+  The script is the iteration loop.
+
+The exercise also reframed the calibration loop itself: a judge fix is one
+prompt edit + one re-score (Sonnet-only, no Kimi) + one agreement check.
+That whole cycle runs in minutes and burns no agent tokens — the cheapest
+iteration in the harness.
+
 ## What this does NOT establish
 
 - Inter-grader reliability (one human grader).
