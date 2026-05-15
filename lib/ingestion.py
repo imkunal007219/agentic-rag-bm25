@@ -54,6 +54,13 @@ _PAGE_HEADER_LEFT = re.compile(
     r"^\s*\d{1,4}\s+\|\s+(.+?)\s*$"
 )
 
+# Numbered-paragraph marker: "  5.  Word..." or "12.   Word..."
+# Used for aphoristic/numbered texts (Meditations, Tractatus, Pensees, etc.)
+# Requires 2+ spaces after the period AND a capital letter following — both
+# rule out date fragments ("180 A.D."), decimals, and inline references.
+_PARA_NUMBER = re.compile(r"^\s*(\d{1,3})\.\s{2,}[A-Z\"‘’“”]")
+_MIN_PARA_MARKERS = 4   # need this many in a chapter body to trust the signal
+
 
 def load_pdf(path: Path) -> str:
     """Extract text from a PDF as a single string (pages joined by blank lines).
@@ -95,7 +102,7 @@ def _is_heading(line: str) -> bool:
     return any(pat.match(stripped) for pat in _HEADING_PATTERNS)
 
 
-def to_markdown(text: str, source_name: str) -> str:
+def to_markdown(text: str, source_name: str, *, paragraph_split: bool = True) -> str:
     """Convert raw text to markdown with `## ` section headings.
 
     Two strategies, picked automatically:
@@ -118,7 +125,9 @@ def to_markdown(text: str, source_name: str) -> str:
     heading_idx = [i for i in range(len(lines)) if heading_at(i)]
 
     if len(heading_idx) >= _HEADING_DETECT_THRESHOLD:
-        return _markdown_from_detected_headings(lines, heading_idx, source_name)
+        return _markdown_from_detected_headings(
+            lines, heading_idx, source_name, paragraph_split=paragraph_split
+        )
     return _markdown_from_windows(text, source_name)
 
 
@@ -169,8 +178,38 @@ def _split_body_by_subsections(body: str, subsections: set[str]) -> str:
     return "\n".join(out)
 
 
+def _split_body_by_paragraph_numbers(body: str, chapter_heading: str) -> str | None:
+    """For aphoristic/numbered texts, split a chapter body on `N. Word...`
+    paragraph markers. Each marker becomes a `## <chapter> N.` sub-heading.
+
+    Returns the rewritten body, or None if not enough markers were found
+    to trust the signal (in which case caller leaves the body intact).
+    """
+    matches = [
+        (i, m.group(1))
+        for i, line in enumerate(body.splitlines())
+        if (m := _PARA_NUMBER.match(line))
+    ]
+    if len(matches) < _MIN_PARA_MARKERS:
+        return None
+    chapter_label = chapter_heading.strip().rstrip(".")
+    lines = body.splitlines()
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        m = _PARA_NUMBER.match(line)
+        if m:
+            n = m.group(1)
+            rest = line[m.end() - 1:]  # keep the leading capital letter
+            out.append(f"## {chapter_label}.{n}")
+            out.append(rest)
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _markdown_from_detected_headings(
-    lines: list[str], heading_idx: list[int], source_name: str
+    lines: list[str], heading_idx: list[int], source_name: str,
+    *, paragraph_split: bool = True,
 ) -> str:
     out = [f"# {source_name}", ""]
 
@@ -190,6 +229,21 @@ def _markdown_from_detected_headings(
         # promote standalone occurrences within this chapter to `## `.
         subsections = _detect_subsections(body)
         body = _split_body_by_subsections(body, subsections)
+        # If no titled sub-sections were found, fall back to numbered-paragraph
+        # detection for aphoristic texts (Meditations, Tractatus, etc.).
+        # Numbered-paragraph splits HELP when paragraphs have distinct vocab
+        # (e.g. textbook lists) but HURT when paragraphs share thematic vocab
+        # and BM25 can't isolate the right one (measured on Meditations:
+        # 75% -> 58% pass rate). Caller can opt out via paragraph_split=False.
+        if paragraph_split and not subsections:
+            split = _split_body_by_paragraph_numbers(body, heading)
+            if split is not None:
+                # The chapter-level `## <heading>` will be emitted below; the
+                # split injects `## <heading>.N` markers within. The leading
+                # chapter line is redundant once paragraphs are promoted, so
+                # skip it and emit just the paragraph chunks.
+                out += [split, ""]
+                continue
         out += [f"## {heading}", "", body, ""]
     return "\n".join(out)
 
@@ -208,7 +262,8 @@ def _markdown_from_windows(text: str, source_name: str) -> str:
     return f"# {source_name}\n\n" + "\n".join(sections)
 
 
-def ingest(input_path: Path, corpus_name: str, kb_root: Path) -> Path:
+def ingest(input_path: Path, corpus_name: str, kb_root: Path,
+           *, paragraph_split: bool = True) -> Path:
     """Convert a raw file into the corpus layout and build its BM25 index.
 
     Returns the corpus directory under kb_root.
@@ -240,7 +295,8 @@ def ingest(input_path: Path, corpus_name: str, kb_root: Path) -> Path:
     if suffix == ".md" and "\n## " in raw:
         md = raw
     else:
-        md = to_markdown(raw, source_name=input_path.stem)
+        md = to_markdown(raw, source_name=input_path.stem,
+                         paragraph_split=paragraph_split)
 
     corpus_dir = Path(kb_root) / corpus_name
     corpus_dir.mkdir(parents=True, exist_ok=True)
@@ -265,6 +321,10 @@ def main() -> None:
     parser.add_argument("--kb-root", type=Path, default=None,
                         help="knowledge-base root "
                              "(default: $KB_ROOT or ~/knowledge-bases)")
+    parser.add_argument("--no-paragraph-split", action="store_true",
+                        help="disable numbered-paragraph splitting "
+                             "(use for aphoristic texts where small chunks "
+                             "hurt BM25 retrieval, e.g. Meditations)")
     args = parser.parse_args()
 
     kb_root = args.kb_root or Path(os.environ.get(
@@ -272,7 +332,8 @@ def main() -> None:
     ))
 
     try:
-        corpus_dir = ingest(args.input, args.corpus, kb_root)
+        corpus_dir = ingest(args.input, args.corpus, kb_root,
+                            paragraph_split=not args.no_paragraph_split)
     except Exception as e:
         print(f"ingest failed: {e}", file=sys.stderr)
         sys.exit(1)
