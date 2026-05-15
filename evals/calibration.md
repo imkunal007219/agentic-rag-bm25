@@ -1,8 +1,8 @@
 # Judge calibration
 
-The eval harness scores agent answers with an LLM judge (Claude Sonnet 4.6). Before any pass rate quoted from that judge is worth reading, the judge itself has to be measured against something. This note is that measurement: how the current judge (v2) was built, how it was checked against hand-grades, and what the agreement numbers do and don't prove.
+The eval harness scores agent answers with an LLM judge (Claude Sonnet 4.6). Before any pass rate quoted from that judge is worth reading, the judge itself has to be measured against something. This note is that measurement. How the current judge (v2) was built, how it was checked against hand-grades, what the agreement numbers do and don't prove.
 
-The headline: **judge-v2 hits 17 out of 18 exact bucket matches against re-anchored hand-grades (94%). The previous judge (v1) gets 7 out of 18 (39%) on the same comparison.** Both passes used the same 18 rows, the same scoring code, the same hand-graders' calls. The only thing that changed was the rubric.
+The headline: **judge-v2 hits 17 out of 18 exact bucket matches against re-anchored hand-grades (94%). The previous judge (v1) gets 7 out of 18 (39%) on the same comparison.** Both passes used the same 18 rows, the same scoring code, the same hand-grader's calls. Only the rubric changed.
 
 ## Why calibrate
 
@@ -29,12 +29,12 @@ Ambiguous-type questions keep a three-bucket scale (1.0 / 0.5 / 0.0); refusal qu
 
 This rubric is the fourth attempt, and the first one that worked. The earlier iterations and what each one taught:
 
-- **v1 (four buckets, 0.7 = "thin or imprecise but not wrong").** Easy to write, hard to apply. The judge collapsed everything borderline into 0.7. Worse, a hand-grader applying the same rubric also collapsed into 0.7 — which made the judge look fine in the easy-regime calibration and hid the real disagreement.
+- **v1 (four buckets, 0.7 = "thin or imprecise but not wrong").** Easy to write, hard to apply. The judge collapsed everything borderline into 0.7. Worse, a hand-grader applying the same rubric also collapsed into 0.7, which made the judge look fine in easy-regime calibration and hid the real disagreement.
 - **v1.1 (drafted, never shipped).** Tried to tighten the 0.7 language without removing the bucket. Same central-tendency problem in dry runs. Deleted.
-- **v2-draft / v3-draft.** Various attempts to split the 0.7 bucket along axes like "missing-claim vs sloppy-phrasing." Didn't help; the rubric got longer without removing the ambiguity.
-- **v2 (shipped).** Collapse the muddled middle bucket entirely. Add a separate 0.9 bucket for "right answer, wrong chunk" so retrieval correctness and answer correctness stay observable as independent signals. Treat extra prose as not-a-defect: if the reference meaning is in the answer, score it 1.0.
+- **v2-draft, v3-draft.** Attempts to split the 0.7 bucket along axes like "missing-claim vs sloppy-phrasing." Didn't help. The rubric got longer without removing the ambiguity.
+- **v2 (shipped).** Collapse the muddled middle bucket entirely. Add a separate 0.9 bucket for "right answer, wrong chunk" so retrieval correctness and answer correctness stay observable as independent signals. Treat extra prose as not-a-defect. If the reference meaning is in the answer, score it 1.0.
 
-The design move that mattered was **separating chunk-correctness from answer-correctness**. Before v2, a row where retrieval missed the canonical chunk but the agent answered from an equivalent passage was either a false positive (1.0 papering over a retrieval miss) or a false negative (0.4 punishing a correct answer). The 0.9 bucket makes that case explicit and counts it as a pass while still flagging the retrieval signal in the trace.
+The design move that mattered was **separating chunk-correctness from answer-correctness**. Before v2, a row where retrieval missed the canonical chunk but the agent answered from an equivalent passage was either a false positive (1.0 papering over a retrieval miss) or a false negative (0.4 punishing a correct answer). The 0.9 bucket makes that case explicit, counts it as a pass, and still flags the retrieval signal in the trace.
 
 ## Protocol
 
@@ -52,7 +52,7 @@ The design move that mattered was **separating chunk-correctness from answer-cor
 
 The single judge-v2 miss is q009: the judge scored 0.9 where the hand-grade said 1.0. Retrieval was recall=1.0 on that row, so the judge was slightly conservative on a borderline call. It's a within-1-bucket miss, not a substantive disagreement.
 
-The framing matters. Under the original v1-anchor (the worksheet as first written), judge-v1 looked decent (67% exact-match) and judge-v2 looked like a marginal regression (72% exact-match). That comparison was apples-to-oranges: the v1 hand-grades baked in a "thin answers are 0.7" rule that judge-v2 explicitly rejects. Under the matched rubric, judge-v2 is ahead by 55 points, not behind by five. **The previous calibration just couldn't see it because the reference was using a different rubric than the judge under test.** That's a methodological lesson, not a small one.
+The framing matters. Under the original v1-anchor (the worksheet as first written), judge-v1 looked decent (67% exact-match) and judge-v2 looked like a marginal regression (72% exact-match). That comparison was apples-to-oranges. The v1 hand-grades baked in a "thin answers are 0.7" rule that judge-v2 explicitly rejects. Under the matched rubric, judge-v2 is ahead by 55 points, not behind by five. **The previous calibration just couldn't see it because the reference was using a different rubric than the judge under test.** This is the kind of methodological hole that quietly invalidates most LLM-judge comparisons in the wild.
 
 ## Cross-corpus evidence
 
@@ -64,22 +64,22 @@ The same judge-v2 was used to score three different corpora. The pass rates and 
 | Géron Hands-On ML | semi-technical textbook | 80% | chapter + sub-section split (+33pp lift vs chapter-only) |
 | Marcus Aurelius — Meditations | classical philosophy | 75% | **chapter only** (paragraph-level split regressed by 17pp) |
 
-Three points worth pulling out:
+Three things to pull out of that table.
 
-The same agent prompt (v6) and the same judge (v2) generalize across three very different domains without per-corpus tuning. That's the cross-domain proof for the system overall.
+One: the same agent prompt (v6) and the same judge (v2) generalize across three very different domains without per-corpus tuning. That's the cross-domain proof for the system overall.
 
-The chunking decision is not universal. Paragraph-level chunking lifted Géron by 33 points and hurt Meditations by 17. The mechanical explanation (sub-section headings carry query-matching vocabulary in textbooks; numbered paragraph IDs in Meditations don't) is in `notes-meditations-chunking.md`. The point for calibration: **the harness detected this regression on the first run.** Without the eval, the regression ships.
+Two: the chunking decision is not universal. Paragraph-level chunking lifted Géron by 33 points and hurt Meditations by 17. The mechanical explanation, that sub-section headings carry query-matching vocabulary in textbooks but numbered paragraph IDs in Meditations don't, is in `notes-meditations-chunking.md`. The point for calibration: **the harness detected this regression on the first run.** Without the eval, the regression ships.
 
-The Meditations result is the strongest portfolio claim, not the weakest. A uniformly-rising chart on three corpora invites "did you tune to your eval set?" An A/B with one direction reversed and a mechanical explanation does not.
+Three: the Meditations result is the strongest portfolio claim, not the weakest. A uniformly-rising chart on three corpora invites "did you tune to your eval set?" An A/B with one direction reversed and a mechanical explanation does not.
 
 ## Honest caveats
 
 What the 94% number is, and isn't:
 
-- **Single grader.** Inter-grader reliability is not established. Re-grading the same 18 rows next week would likely flip one or two on its own. A 94% exact-match number should be read as "near the ceiling of what single-grader agreement can produce," not as a hard score.
-- **Single corpus for the calibration sample.** The hand-grades are all from the guidance corpus. Judge behavior on the ML or Meditations corpora hasn't been hand-validated to the same depth, only spot-checked.
-- **No adversarial slice.** The 18 rows are representative of the natural run distribution, not selected to stress edge cases. Calibration on deliberately hard rows (answers that paraphrase the reference heavily, answers that hedge, answers that include the reference plus a wrong claim) is the next round of work.
-- **The 0.9 bucket is the rubric's main innovation.** Two of the 18 rows actually exercise it. The bucket is well-defined and the judge applies it correctly on those two, but two is a small N for any claim about the bucket itself.
+- **Single grader.** Inter-grader reliability is not established. Re-grading the same 18 rows next week would likely flip one or two on its own. Read 94% as "near the ceiling of what single-grader agreement can produce," not as a hard score.
+- **Single corpus for the calibration sample.** The hand-grades are all from the guidance corpus. Judge behavior on the ML or Meditations corpora has been spot-checked but not hand-validated to the same depth.
+- **No adversarial slice.** The 18 rows are representative of the natural run distribution, not selected to stress edge cases. Calibration on deliberately hard rows (heavy paraphrase, hedged answers, correct-plus-wrong-claim) is the next round of work.
+- **Small N on the 0.9 bucket.** Two of the 18 rows actually exercise it. The bucket is well-defined and the judge applies it correctly on those two. Two is still a small N for any claim about the bucket itself.
 
 The number to quote in interviews and writeups: **94% under matched-rubric calibration on 18 rows, single grader, guidance corpus only. Partial-credit and cross-corpus calibration pending.**
 
@@ -100,4 +100,4 @@ The number to quote in interviews and writeups: **94% under matched-rubric calib
 
 ## History
 
-A previous version of this document (`calibration_v4.md` in git history) reported a 100% within-one-bucket agreement on a 10-row easy-regime sample, scored under v1's rubric. That number was technically correct and operationally misleading: the sample contained no partial-credit rows and used the same rubric that produced the central-tendency bias being measured. The matched-rubric, judge-v2 number reported here supersedes it.
+A previous version of this document reported 100% within-one-bucket agreement on a 10-row easy-regime sample, scored under v1's rubric. That number was technically correct and operationally misleading. The sample contained no partial-credit rows and used the same rubric that was producing the central-tendency bias being measured. The matched-rubric, judge-v2 result reported here supersedes it.
