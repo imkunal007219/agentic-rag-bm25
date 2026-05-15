@@ -33,6 +33,8 @@ _HEADING_PATTERNS = [
     re.compile(r"^\s*SECTION\s+\d+(\.\d+)*\b.*$"),
     re.compile(r"^\s*Section\s+\d+(\.\d+)*\b.*$"),
     re.compile(r"^\s*\d+(\.\d+)+\s+\S.{0,80}$"),   # 1.2.3 Subtitle
+    re.compile(r"^\s*BOOK\s+[IVXLCDM]+\.?\s*$"),    # BOOK II. / BOOK XII
+    re.compile(r"^\s*Book\s+[IVXLCDM]+\.?\s*$"),
 ]
 
 _WORDS_PER_WINDOW = 800              # fallback window size
