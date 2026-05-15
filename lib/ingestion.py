@@ -39,6 +39,19 @@ _WORDS_PER_WINDOW = 800              # fallback window size
 _MIN_BODY_CHARS = 50                 # mirrors expert_index.py drop threshold
 _HEADING_DETECT_THRESHOLD = 3        # need this many to trust heading detection
 
+# Sub-section detection via PDF page-header repetition.
+# Textbooks repeat the current section name with the page number on each
+# page, e.g. "Voting Classifiers  | 191" or "192 | Chapter 7: Ensemble...".
+# Real sub-section titles thus appear in BOTH the page-header form AND as
+# standalone titles at the section start. Titlecase-looking noise (figure
+# captions, page numbers, code) does not. We use that redundancy.
+_PAGE_HEADER_RIGHT = re.compile(
+    r"^\s*([A-Z][A-Za-z0-9'’ \-]{2,60})\s+\|\s+\d{1,4}\s*$"
+)
+_PAGE_HEADER_LEFT = re.compile(
+    r"^\s*\d{1,4}\s+\|\s+(.+?)\s*$"
+)
+
 
 def load_pdf(path: Path) -> str:
     """Extract text from a PDF as a single string (pages joined by blank lines).
@@ -107,6 +120,53 @@ def to_markdown(text: str, source_name: str) -> str:
     return _markdown_from_windows(text, source_name)
 
 
+def _detect_subsections(body: str) -> set[str]:
+    """Extract sub-section titles from a chapter body using PDF page-header
+    repetition as the signal.
+
+    Returns the set of titles that appeared at least once in a page-header
+    line. These are high-confidence — titlecase noise does not appear in
+    page headers, so this filter rules out figure captions, code-comment
+    titles, table labels, etc.
+    """
+    candidates: set[str] = set()
+    for line in body.splitlines():
+        stripped = line.strip()
+        m = _PAGE_HEADER_RIGHT.match(stripped)
+        if m:
+            candidates.add(m.group(1).strip())
+        else:
+            m = _PAGE_HEADER_LEFT.match(stripped)
+            if m:
+                # Drop "Chapter N: ..." forms — those are book-level headers
+                title = m.group(1).strip()
+                if not title.lower().startswith("chapter "):
+                    candidates.add(title)
+    # Drop anything that contains "Chapter " — book-level, not sub-section
+    return {c for c in candidates if "Chapter " not in c and len(c) >= 3}
+
+
+def _split_body_by_subsections(body: str, subsections: set[str]) -> str:
+    """Within a chapter body, promote standalone occurrences of detected
+    sub-section titles to `## ` markdown headings AND drop the page-header
+    repetitions (now noise after we've extracted them).
+    """
+    if not subsections:
+        return body
+    out: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        # Drop page-header lines — they served their purpose during detection
+        if _PAGE_HEADER_RIGHT.match(stripped) or _PAGE_HEADER_LEFT.match(stripped):
+            continue
+        # Promote a standalone subsection-title line to a `## ` heading
+        if stripped in subsections:
+            out.append(f"## {stripped}")
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _markdown_from_detected_headings(
     lines: list[str], heading_idx: list[int], source_name: str
 ) -> str:
@@ -124,6 +184,10 @@ def _markdown_from_detected_headings(
         body = "\n".join(lines[start + 1:end]).strip()
         if len(body) < _MIN_BODY_CHARS:
             continue
+        # Sub-section split: detect titles via page-header repetition, then
+        # promote standalone occurrences within this chapter to `## `.
+        subsections = _detect_subsections(body)
+        body = _split_body_by_subsections(body, subsections)
         out += [f"## {heading}", "", body, ""]
     return "\n".join(out)
 
