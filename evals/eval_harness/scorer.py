@@ -141,44 +141,62 @@ def _judge(prompt: str, max_tokens: int = 1024) -> dict:
 # ── Correctness judge (used by single/multi hop) ─────────────────────
 
 _CORRECTNESS_PROMPT = """You are an expert evaluator grading an answer from a retrieval-augmented \
-generation (RAG) system on a missile-guidance technical-textbook corpus.
+generation (RAG) system. The reference answer is the ground truth drawn from the source \
+corpus; grade the system answer against it.
 
 QUESTION:
 {question}
 
-REFERENCE ANSWER (the answer drawn from the source textbook):
+REFERENCE ANSWER (ground truth from the source corpus):
 {reference}
 
 SYSTEM ANSWER (what the RAG produced):
 {actual}
 
-Grade the system answer on a 0-1 scale using this rubric:
+RETRIEVAL STATUS:
+{chunk_status}
 
-  1.0  — Substantively correct and complete. Captures all key facts in the
-         reference, possibly with extra context. Paraphrasing is fine.
+Grade the system answer by comparing it to the REFERENCE. The reference is the anchor — \
+extra context or longer prose in the system answer is NOT a defect as long as the meaning \
+of the reference is captured.
 
-  0.7  — Mostly correct. Captures the main fact(s) but omits a secondary
-         detail, OR adds extraneous claims that are not wrong but distract.
+  1.0  — The system answer contains the reference answer or conveys its meaning, even if
+         the system answer adds extra correct context. AND the retrieval pulled the
+         expected reference chunk(s).
 
-  0.4  — Partially correct. Mentions the topic correctly but misstates,
-         conflates, or omits the central fact the reference establishes.
+  0.9  — The system answer contains the reference answer or conveys its meaning, BUT the
+         retrieval did NOT pull the expected reference chunk(s). Right answer, sourced
+         from a different chunk than the labelled one.
 
-  0.0  — Incorrect or fabricated. Contradicts the reference, hallucinates
-         specifics not in the reference, or fails to answer.
+  0.4  — The system answer is incomplete: it covers part of the reference but misses a
+         claim that is central to the reference.
+
+  0.0  — The system answer is wrong, fabricated, or hallucinated — it contradicts the
+         reference or invents details not present in the reference.
 
 Output JSON with two fields:
-  "score": float in {{0.0, 0.4, 0.7, 1.0}}
-  "rationale": short single-sentence explanation
+  "score": float in {{0.0, 0.4, 0.9, 1.0}}
+  "rationale": short single-sentence explanation. If score < 1.0, the rationale must
+               name what is missing, wrong, or sourced incorrectly.
 
 Output JSON only — no preamble, no code fences.
 """
 
 
-def _judge_correctness(sample: Sample, result: Result) -> tuple[float, str]:
+def _judge_correctness(
+    sample: Sample, result: Result, *, chunks_hit: bool
+) -> tuple[float, str]:
+    chunk_status = (
+        "The agent retrieved the expected reference chunk(s) — retrieval is correct."
+        if chunks_hit
+        else "The agent did NOT retrieve the expected reference chunk(s) — "
+             "the retrieval is incorrect even if the answer happens to be right."
+    )
     prompt = _CORRECTNESS_PROMPT.format(
         question=sample.question,
         reference=sample.expected_answer or "(no reference; refer to chunks)",
         actual=result.answer,
+        chunk_status=chunk_status,
     )
     obj = _judge(prompt)
     return float(obj["score"]), str(obj["rationale"])
@@ -199,7 +217,8 @@ def score_single_hop(sample: Sample, result: Result) -> Score:
     arbiter of "did the system answer correctly?".
     """
     recall = _retrieval_recall(sample.expected_chunks, result)
-    correctness, rationale = _judge_correctness(sample, result)
+    chunks_hit = recall == 1.0
+    correctness, rationale = _judge_correctness(sample, result, chunks_hit=chunks_hit)
     passed = correctness >= 0.7
     value = correctness
     return Score(
@@ -217,9 +236,11 @@ def score_single_hop(sample: Sample, result: Result) -> Score:
 def score_multi_hop(sample: Sample, result: Result) -> Score:
     """Multi-hop: recall over ALL expected chunks + correctness."""
     recall = _retrieval_recall(sample.expected_chunks, result)
-    correctness, rationale = _judge_correctness(sample, result)
-    # Multi-hop bar: at least one chunk found AND answer captures synthesis
-    passed = recall >= 0.5 and correctness >= 0.7
+    chunks_hit = recall >= 0.5
+    correctness, rationale = _judge_correctness(sample, result, chunks_hit=chunks_hit)
+    # Multi-hop bar: judge score embeds chunk correctness via RETRIEVAL STATUS,
+    # so a single >= 0.7 gate is sufficient. recall stays in components for trace.
+    passed = correctness >= 0.7
     value = (recall + correctness) / 2
     return Score(
         sample_id=sample.id,
@@ -238,8 +259,8 @@ _REFUSAL_PROMPT = """You are evaluating whether a retrieval-augmented generation
 correctly refused to answer an out-of-corpus question.
 
 CONTEXT:
-The system's knowledge base is a missile-guidance textbook. The QUESTION below is deliberately \
-chosen to be OUTSIDE the corpus — the textbook does not address it. A correct response is one \
+The system's knowledge base is a single bounded corpus (e.g., a technical textbook). The \
+QUESTION below is deliberately chosen to be OUTSIDE the corpus — the textbook does not address it. A correct response is one \
 that either:
   (a) explicitly says the corpus / knowledge base / book does not cover the topic, or
   (b) declines to provide an authoritative answer and notes the limitation.
