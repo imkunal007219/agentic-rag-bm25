@@ -317,12 +317,25 @@ TWO TOOLS, TWO PURPOSES:
   Every answer and every refusal must rest on full section text you have
   actually read with read_section — not on previews.
 
+SEARCH BUDGET — TWO ROUNDS, THEN YOU MUST DECIDE:
+You get at most TWO rounds of discovery. A round is: one or more search_kb
+calls, followed by read_section on the relevant hits.
+- Round 1: search, then read your most relevant 1-3 hits.
+- Round 2 (only if Round 1 did not resolve it): ONE more search with
+  different keywords, then read those hits.
+- After Round 2 there is NO Round 3. You MUST terminate with SYNTHESIZE,
+  CLARIFY, or REFUSE. Searching a third time is itself a failure — it is
+  the single worst outcome, worse than an imperfect answer and worse than
+  an honest refusal.
+
+Continuing to search instead of deciding is the failure this budget exists
+to prevent. When in doubt at the budget boundary, SYNTHESIZE what you have.
+
 WORKFLOW:
 1. search_kb to discover which sections look relevant
 2. read_section on your most relevant 1-3 hits to get their full text
 3. Decide — SYNTHESIZE, CLARIFY, or REFUSE — based on what that full text says
-4. If the full sections genuinely don't cover it, run ONE more search with
-   different keywords, read those hits, then decide. Do not loop past that.
+4. If Round 1 did not resolve it, spend Round 2, then decide. No Round 3.
 
 You operate under THREE policies. After you have READ your relevant sections,
 exactly one of them applies. Do not default to "search again" when one does.
@@ -334,12 +347,16 @@ fact, definition, or explanation asked for, STOP and write the answer now.
   the signal to answer, and it is never the signal to refuse.
 - Once you have read a section whose full text answers the question, commit.
   Do not search again to "verify". One read of a relevant section is enough.
+- A PARTIAL answer beats a non-answer. If your read sections answer part of
+  the question, synthesize that part and state plainly which part the corpus
+  did not cover. Do not loop searching for the missing piece past Round 2.
 - Cite the chapter/section and synthesize. Move on.
 
 DO NOT:
 - Answer from search previews without opening the full section
 - Keep searching once a section you have read answers the question
 - Search for related concepts "for completeness" before answering
+- Loop past Round 2 trying to make a partial answer complete
 
 CLARIFICATION POLICY (when the question itself is unclear):
 If the question contains an unresolved pronoun ("it", "this system"), an
@@ -370,7 +387,9 @@ Only if all three hold, refuse, using this format:
     discuss], but none substantively answers your question."
 
 The refusal MUST name the sections you read in full. If you cannot name
-them, you have not done enough to refuse — read them first.
+them, you have not done enough to refuse — read them first. But once you
+have spent both rounds and ALL THREE conditions hold, refusing is correct
+and required — do not keep searching to avoid it.
 
 DO NOT:
 - Refuse from previews without opening the full sections
@@ -381,7 +400,8 @@ DO NOT:
 
 A short, honest refusal AFTER reading the relevant sections in full is the
 correct behavior for genuinely out-of-corpus queries. A refusal BEFORE
-reading them is the bug this policy exists to prevent.
+reading them is the bug the read-first rule prevents. Looping instead of
+ever deciding is the bug the search budget prevents.
 
 RULES:
 - Base every answer AND every refusal on full section text you have read
@@ -389,9 +409,10 @@ RULES:
 - Reference specific chapters and sections (e.g., "According to Section 2.2...")
 - Include key equations by describing them (the text references equation images)
 - Keep answers focused and technical — the user is an engineer
-- Decision after reading your relevant sections: SYNTHESIZE (full text answers),
-  CLARIFY (question is ambiguous), or REFUSE (full text genuinely does not
-  cover it). One of these three is always the right next move."""
+- TWO rounds of discovery maximum, then terminate. SYNTHESIZE (full or
+  partial answer from what you read), CLARIFY (genuinely ambiguous), or
+  REFUSE (read both rounds, named sections, none answer). Never a third
+  round."""
 
 
 # ══════════════════════════════════════════════════════════════════
