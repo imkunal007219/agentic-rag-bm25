@@ -1,208 +1,152 @@
-# Agentic RAG over Technical Textbooks — and a Rigorous Eval of It
+# agentic-rag-bm25
 
-Terminal-native agentic RAG using BM25 keyword retrieval and LLM tool-calling, plus a hand-built evaluation harness that scores it across four failure-mode categories and tracks iteration impact across measured runs.
+A working agentic RAG system, plus the eval harness that proves it works.
 
-No vector database, no embeddings, no LangChain — just ~200 lines of retrieval code plus a small eval framework that turns "did it work?" into measurable numbers.
+No vector database. No LangChain. About 200 lines of retrieval code, a small tool-calling agent, and an eval harness with an LLM judge measured against human grades. Three knowledge bases shipped: a missile-guidance textbook, the Géron Hands-On ML book, and Marcus Aurelius's *Meditations*.
 
----
+## The three numbers
 
-## Headline result — three iterations, measured
+- **94%** — exact-match agreement between the LLM judge and human hand-grades on 18 rows, under a matched rubric. See [`evals/calibration.md`](evals/calibration.md).
+- **75–80%** — agent pass rate across three corpora (technical, semi-technical, classical), same prompt, same judge, no per-corpus tuning.
+- **One reversed result** — the chunking technique that lifted the ML eval by 33 points regressed Meditations by 17. The harness caught it on the first run. [`evals/notes-meditations-chunking.md`](evals/notes-meditations-chunking.md) explains why.
 
-Evaluated on a hand-curated 30-question dataset over a missile-guidance textbook corpus. Each iteration was a single, named change. Each run was scored by an LLM-judge (Claude Sonnet 4.6) against rule-based retrieval-recall.
+That third number is the one I'd actually defend in an interview. A uniformly rising chart is suspicious. An A/B with one direction reversed, and a mechanical explanation for the reversal, is not.
 
-| Run | Overall | Single-hop | Multi-hop | No-answer | Ambiguous |
-|---|---:|---:|---:|---:|---:|
-| `v1-bm25-default` (baseline) | 76.7% | 86.7% | 87.5% | 75.0% | 0.0% |
-| `v2-chunking-fix` | 66.7% | 73.3% | **100%** | 25.0% | 0.0% |
-| `v3-refusal-prompt` | 76.7% | 73.3% | 87.5% | **100%** | **33.3%** |
+## What this is for
 
-The full headline doesn't tell the story by itself — the categories do.
+If you are building RAG in a regulated, air-gapped, or cost-sensitive environment (legal, healthcare, defense, internal engineering knowledge), the usual stack of LangChain plus a hosted vector DB plus uncalibrated LLM scoring is overkill and hides what is actually happening. This project is the opposite:
 
-**Three substantive findings** the eval surfaced (not vibes — diffable across runs):
+- BM25 retrieval. Interpretable, free, runs on a laptop, no embeddings API
+- A small tool-calling agent that decides when to search, when to refuse, when to clarify
+- An eval harness that scores every change against a frozen gold set
+- A judge whose rubric was iterated four times, whose agreement with a human grader is actually measured
 
-1. **The agent ranked back-of-book index pages above real content for definitional queries** because single-letter index pages have 3× the keyword density of real sections. Tagging chunks by content type (`body`, `appendix`, `reference`, `index`, `front_matter`, …) and weighting them at search time moved multi-hop synthesis from 87.5% to **100%** and cut single-hop tokens 34%.
+It is not a production drop-in. It is what someone building under those constraints would assemble if they had a week. Most of the value is in the eval and calibration story, not in the agent itself.
 
-2. **Cleaner retrieval degraded refusal behavior** (75% → 25%). With back-of-book noise removed, out-of-corpus queries returned plausible-but-tangential body chunks, and the agent wove confident answers instead of refusing. The bad chunks had been acting as an implicit hallucination guard. This cross-axis effect doesn't show up in simple evals.
+## Quickstart
 
-3. **Strengthening the refusal policy in the system prompt recovered no-answer to 100%** and unexpectedly improved ambiguity-handling from 0% to 33% — one prompt change addressed two failure modes via instinct transfer. The change broke one multi-hop row (the more cautious agent over-validates and hits its turn budget), measured and logged.
+You need:
 
-Each iteration's full report (per-row scores, judge rationales, trace data) is reproducible — see [Reproducibility](#reproducibility).
-
----
-
-## What's in this repo
-
-```
-agentic-rag-bm25/
-├── lib/                       # The RAG system
-│   ├── expert_index.py        # BM25 indexer + content-type weighting
-│   └── expert_agent.py        # Agentic tool-calling loop (Kimi K2.5)
-├── ask-expert                 # CLI for the RAG
-├── evals/                     # The evaluation harness
-│   ├── groundtruth.jsonl      # 30 hand-validated questions, 4 categories
-│   ├── schema.md              # Dataset schema + validation rules
-│   ├── README.md              # Dataset documentation
-│   ├── eval_harness/          # ~600 lines: dataset loader, runner, scorer, report
-│   │   ├── dataset.py         # Typed loader + schema validation
-│   │   ├── runner.py          # Agent invocation + trace capture + file cache
-│   │   ├── scorer.py          # Four type-aware scorers (rule-based + LLM-judge)
-│   │   ├── report.py          # JSON + Markdown reports
-│   │   └── cli.py             # python -m eval_harness entry point
-│   ├── run.sh                 # Convenience wrapper
-│   └── reports/               # Per-run scored reports (created on run)
-└── requirements.txt
-```
-
----
-
-## The evaluation methodology
-
-### Dataset — 30 questions across four failure modes
-
-Hand-validated by a domain-knowledgeable author (one row at a time, source-checked against the textbook). Each row carries a question, a reference answer, the expected source chunks, and a `question_type` tag determining which scorer is used.
-
-| Type | Count | What it measures |
-|---|---:|---|
-| `single_hop` | 15 | Retrieval-then-synthesis from one chunk. Tests the baseline RAG loop. |
-| `multi_hop` | 8 | Cross-chunk synthesis. Tests whether the agent decomposes and iterates. |
-| `no_answer` | 4 | Out-of-corpus queries (near-miss traps that share vocabulary with the corpus). Tests hallucination resistance. |
-| `ambiguous` | 3 | Pronoun/term-overload/scope ambiguity. Tests whether the system clarifies or silently commits. |
-
-See [`evals/schema.md`](evals/schema.md) and [`evals/README.md`](evals/README.md) for the full schema, validation rules, and curation methodology.
-
-### Scorers — type-appropriate, hybrid rule + LLM-judge
-
-Different question types need different scoring. A single scorer would either be too strict (penalizes paraphrase on single-hop) or too lenient (can't detect silent commitment on ambiguous).
-
-| Question type | Scoring |
-|---|---|
-| `single_hop` | Rule-based retrieval recall AND LLM-judge correctness against reference |
-| `multi_hop` | Rule-based recall@k over multiple chunks AND LLM-judge correctness |
-| `no_answer` | LLM-judge refusal detection (the system should decline, not fabricate) |
-| `ambiguous` | LLM-judge against an `expected_behavior` description (does the response surface the ambiguity?) |
-
-Judge model is **Claude Sonnet 4.6**, deliberately a different model family than the agent under test (Kimi K2.5) to avoid self-evaluation bias. Judge prompts are rubric-style with discrete score levels (0.0 / 0.4 / 0.7 / 1.0) for reproducibility, and demand structured JSON output. Per-row judge rationale is captured in every report.
-
-### Trace capture
-
-Every agent invocation is recorded with its tool-call sequence, turn count, and token usage. This is what surfaced the back-of-book-index finding — naive answer-checking would have missed it because the agent eventually produced the right answer (after burning 5 tool calls). Trace data turns "did it work?" into "*how* did it work, and at what cost?"
-
-### Caching and reproducibility
-
-Agent results are cached per run-label by `(sample_id, sha256(question)[:12])`. Re-running the same eval after fixing a scorer is instant; iterating on the agent itself requires `--force` or selectively deleting cache entries. Each run writes a timestamped report under `evals/reports/<label>/<timestamp>/` so old runs are never overwritten.
-
----
-
-## Reproducibility
+- Python 3.10+
+- An OpenAI-compatible LLM API for the agent (Moonshot's Kimi K2.5, DeepSeek, or local Ollama all work)
+- An Anthropic API key for the judge (Claude Sonnet 4.6)
+- About $0.30 in API credits for a full 12-row run, or free if you only want the agent
 
 ```bash
-# 1. Clone and install
 git clone https://github.com/imkunal007219/agentic-rag-bm25.git
 cd agentic-rag-bm25
 ./setup.sh
 
-# 2. Configure the agent (Kimi K2.5 here; any OpenAI-compatible API works)
-export WORKER_API_KEY="sk-..."
+export WORKER_API_KEY="sk-..."                         # your agent provider
 export WORKER_BASE_URL="https://api.moonshot.ai/v1"
 export WORKER_MODEL="kimi-k2.5"
+export ANTHROPIC_API_KEY="sk-ant-..."                  # the judge
+export KB_ROOT="$HOME/knowledge-bases"                 # where corpora live
 
-# 3. Configure the judge for the eval harness
-export ANTHROPIC_API_KEY="sk-ant-..."
+# Ask the agent a question over the guidance corpus
+ask-expert --domain guidance -q "What is the proportional navigation law?"
 
-# 4. Point at a knowledge base (markdown files chunked on ## headings)
-export KB_ROOT="$HOME/knowledge-bases"
-
-# 5. Run the eval
-./evals/run.sh --label my-run
-
-# Faster iteration: re-run only a subset of question types
-./evals/run.sh --label my-run --types ambiguous --force
+# Run the full eval (12 rows, ~12 minutes first time, ~30s cached)
+./evals/run.sh --label my-first-run --domain guidance
 ```
 
-A full 30-question run costs ~$0.30 in API tokens and ~12 minutes the first time. Subsequent runs with the same label hit the cache and complete in ~30 seconds.
+The report lands in `evals/reports/my-first-run/<timestamp>/report.md` with per-row scores, judge rationales, recall, and trace data.
 
-The report lands at `evals/reports/<label>/<timestamp>/report.md` (human-readable) and `report.json` (machine-readable / diffable).
+## Adding your own corpus
 
----
-
-## Using the RAG by itself
-
-The agent is usable independent of the harness, via the CLI:
+Drop a PDF, text, or pre-chunked markdown file in:
 
 ```bash
-# Single-domain
-ask-expert -q "What is the proportional navigation law?" --domain guidance
-
-# Multi-domain (search all books, agent auto-selects)
-ask-expert -q "Compare optimal control vs PID" --verbose
-
-# List available domains
-ask-expert --list-domains
+python -m lib.ingestion --input ~/Downloads/my-book.pdf --corpus my-corpus
 ```
 
-### How the agent works
+That converts the file to chunked markdown, builds the BM25 index, and registers a new domain you can query. For aphoristic numbered texts where small paragraph chunks hurt retrieval (legal codes, sutras, *Meditations*), pass `--no-paragraph-split`. The reason this flag exists is itself an eval finding, written up in `evals/notes-meditations-chunking.md`.
 
-1. Receives question + tool definitions (`search_all`, `search_domain`, `read_section`)
-2. Decides whether to broad-search across books or dive deep into one
-3. BM25 index returns ranked text chunks (now weighted by content type)
-4. Agent reads full sections if needed
-5. Loop continues until the LLM synthesizes a final answer — or refuses for an out-of-corpus query
+For very old OCR-scanned PDFs where pypdf garbles word spacing, pre-convert with `pdftotext yourbook.pdf yourbook.txt` and feed the `.txt`. Automatic fallback is on the roadmap.
 
-### Why BM25 (not vectors)?
+## How the eval works
 
-For technical-textbook retrieval where exact terminology matters ("Lyapunov stability", "Ziegler-Nichols", "Lark missile 1950"), BM25 often outperforms semantic search. It's also deterministic, free to run, and ships with zero vector-DB dependencies. A planned follow-up study evaluates BM25 against vector and hybrid retrieval using this same harness.
+Every question in the gold set carries a type tag. The scorer picks a different rule per type:
 
----
+| Type | What it measures | Scoring |
+|---|---|---|
+| `single_hop` | Retrieve, then answer from one chunk | Recall + LLM-judge correctness |
+| `multi_hop` | Synthesize from multiple chunks | Recall@k + correctness |
+| `no_answer` | Out-of-corpus question | Refusal detection. The agent should decline, not fabricate. |
+| `ambiguous` | Vague or overloaded question | Did the agent clarify, or silently commit to one reading? |
 
-## Adding your own knowledge base
+The judge is Claude Sonnet 4.6, a different model family than the agent (Kimi K2.5), so it is not grading its own output. The rubric uses four discrete buckets, and the one I'd point at as the rubric's main contribution is **0.9 — "right answer, wrong chunk"**. Without that bucket, a row where retrieval misses the canonical source but the agent answered correctly from an equivalent passage becomes either a false positive or a false negative. The 0.9 bucket keeps retrieval correctness and answer correctness observable as separate signals.
 
-Drop markdown files into `$KB_ROOT/<domain-name>/`. The indexer chunks on `##` headings.
+Read [`evals/calibration.md`](evals/calibration.md) before trusting any pass rate this thing produces. The 94% number is on 18 rows, single grader, one corpus. Read the caveats.
+
+## Why no vector DB
+
+Three reasons, and they compound.
+
+One: for textual corpora where users use the document's own vocabulary, BM25 is competitive with or better than dense retrieval. The semantic-search lift mostly shows up when query vocabulary diverges from document vocabulary (paraphrase, multi-language, retail search). In legal, medical, and technical writing, vocabulary is the point.
+
+Two: BM25 is interpretable. I can point at the exact term that scored a chunk. In compliance settings that property is the difference between "we can use this" and "we cannot."
+
+Three: a 10-million-document BM25 index is a 200 MB pickle file. The same index in Pinecone is a recurring bill.
+
+If you have a use case where embeddings clearly win (retail product search, cross-lingual retrieval, semantic deduplication), use embeddings. This project is for the other use cases, where people reach for vectors by reflex.
+
+## What's in the repo
 
 ```
-$KB_ROOT/
-├── control-theory/
-│   ├── chapter-1.md
-│   └── chapter-2.md
-└── propulsion/
-    ├── rocket-engines.md
-    └── turbofans.md
+agentic-rag-bm25/
+├── lib/
+│   ├── expert_index.py        # BM25 indexer
+│   ├── expert_agent.py        # Tool-calling agent (search_kb, read_section)
+│   └── ingestion.py           # PDF/TXT → chunked markdown + BM25 index
+├── ask-expert                 # CLI wrapper for the agent
+├── evals/
+│   ├── groundtruth.jsonl              # Guidance corpus gold set, 30 rows
+│   ├── groundtruth-ml.jsonl           # Géron ML corpus gold set, 15 rows
+│   ├── groundtruth-meditations.jsonl  # Meditations gold set, 12 rows
+│   ├── calibration.md                 # Judge calibration writeup. Read this first.
+│   ├── notes-meditations-chunking.md  # The negative result
+│   ├── eval_harness/                  # Dataset loader, runner, scorer, report
+│   └── run.sh                         # Convenience wrapper
+├── setup.sh
+└── requirements.txt
 ```
 
-Files are auto-indexed on first query and cached. The `CHUNKER_VERSION` constant in `lib/expert_index.py` auto-invalidates cached indexes when chunking semantics change.
+## Project status
 
----
+Working:
 
-## Performance
+- BM25 retrieval, agent loop, ingestion CLI, eval harness, calibrated judge
+- Three corpora running with measured pass rates
+- Reproducible reports per run
 
-Tested on the missile-guidance corpus (10 chapters, 74 indexed chunks after content-type filtering):
+Pending:
 
-- **Typical tool calls per query**: 2–5 (lower with the v3 refusal-policy prompt)
-- **Per-query latency**: 5–20 seconds (depends on agent provider)
-- **Per-query token cost**: ~$0.01–$0.05 (Kimi K2.5)
-- **Eval run cost**: ~$0.30 for the full 30-row dataset including Sonnet judging
+- Live demo (Hugging Face Spaces)
+- Adversarial calibration slice (edge-case rows for the judge)
+- Inter-grader reliability pass (second human, kappa score)
+- pypdf → pdftotext automatic fallback for old OCR'd PDFs
+- OCR support for scanned PDFs (via ocrmypdf)
+- Test suite
 
----
+If you find a real-world corpus where this approach fails in an interesting way, open an issue.
 
-## Worth reading next
+## Related work worth reading
 
-If you found this useful you might also find these interesting:
-
-- Hailey Schoelkopf — "EleutherAI's lm-evaluation-harness, design notes" — the canonical reference for LLM eval rigor.
-- Hamel Husain — "Your AI product needs evals" and "Creating a LLM-as-a-Judge" at hamel.dev — the practitioner's guide to production eval.
-- JJ Allaire — Inspect framework from UK AISI — production-grade eval framework whose Task / Solver / Scorer abstractions inspired this harness's structure.
-
----
+- Hailey Schoelkopf, *lm-evaluation-harness design notes*. The canonical reference for LLM eval rigor.
+- Hamel Husain, *Your AI product needs evals* and *Creating an LLM-as-a-Judge* at hamel.dev. The practitioner's guide to production eval that this project's calibration protocol leans on.
+- JJ Allaire's Inspect framework (UK AISI). Production eval framework whose Task / Solver / Scorer abstractions inspired this harness's structure.
+- Anthropic's *Building effective agents*. The agent loop here is closer to that essay's "augmented LLM" pattern than to a LangChain-style chain.
 
 ## Author
 
-**Kunal Bhardwaj** — Systems engineer working on autonomous drones and AI-powered developer tools. Building at the intersection of embedded systems and LLM workflows.
+Kunal Bhardwaj. Embedded systems engineer (autonomous drones) moving into applied AI. This repo is part of a 10-day public sprint to ship a portfolio piece I would actually use to argue for a role.
 
-- [Medium](https://medium.com/@kunalbhardwaj598/i-was-burning-through-claude-codes-weekly-limit-in-3-days-here-s-how-i-fixed-it-0344c555abda)
-- [LinkedIn](https://www.linkedin.com/in/kunal-bhardwaj-61433818b)
-- [Claude Coworker Model](https://github.com/imkunal007219/claude-coworker-model) — The worker-model toolkit this project builds on
+- LinkedIn: [linkedin.com/in/kunal-bhardwaj-61433818b](https://www.linkedin.com/in/kunal-bhardwaj-61433818b)
+- Email: kunalbhardwaj598@gmail.com
 
----
+If you're hiring for an applied AI or AI infrastructure role and this is the kind of work you want done, please reach out.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
