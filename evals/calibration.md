@@ -94,9 +94,9 @@ The number to quote in interviews and writeups: **94% under matched-rubric calib
 
 - Rubric source: `lib/expert_agent.py` (agent prompt v6), `evals/eval_harness/scorer.py` (judge prompt v2, `_CORRECTNESS_PROMPT`).
 - Hand-grade worksheet: `evals/calibration_partial_worksheet_v2.md` (18 rows, per-row shifts and justifications).
-- Agreement comparison: `evals/calibration_partial_agreement.py` against the v5 run reports under `evals/reports/v5-evidence-gated-refusal/` and `evals/reports/v5-judgev2-optionB/`.
-- Cross-corpus reports: `evals/reports/medit-v1/`, `evals/reports/ml-v6-subsection/`, `evals/reports/v5-judgev2-optionB/`.
-- Negative-result note (Meditations chunking): `evals/notes-meditations-chunking.md`.
+- Agreement comparison: `evals/calibration_partial_agreement.py` against the v5 run reports at [`reports/v5-evidence-gated-refusal/20260514T102955Z/report.md`](reports/v5-evidence-gated-refusal/20260514T102955Z/report.md) and [`reports/v5-judgev2-optionB/20260515T043853Z/report.md`](reports/v5-judgev2-optionB/20260515T043853Z/report.md).
+- Cross-corpus reports: [`reports/medit-v1/20260515T103135Z/report.md`](reports/medit-v1/20260515T103135Z/report.md), [`reports/ml-v6-subsection/20260515T090911Z/report.md`](reports/ml-v6-subsection/20260515T090911Z/report.md), [`reports/v5-judgev2-optionB/20260515T043853Z/report.md`](reports/v5-judgev2-optionB/20260515T043853Z/report.md).
+- Negative-result note (Meditations chunking): [`notes-meditations-chunking.md`](notes-meditations-chunking.md).
 
 ## History
 

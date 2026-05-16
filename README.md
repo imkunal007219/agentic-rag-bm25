@@ -40,17 +40,31 @@ cd agentic-rag-bm25
 export WORKER_API_KEY="sk-..."                         # your agent provider
 export WORKER_BASE_URL="https://api.moonshot.ai/v1"
 export WORKER_MODEL="kimi-k2.5"
-export ANTHROPIC_API_KEY="sk-ant-..."                  # the judge
+export ANTHROPIC_API_KEY="sk-ant-..."                  # the judge (only needed for evals)
 export KB_ROOT="$HOME/knowledge-bases"                 # where corpora live
 
-# Ask the agent a question over the guidance corpus
-ask-expert --domain guidance -q "What is the proportional navigation law?"
+# Try it in 60 seconds against the bundled sample (Meditations, Book II).
+# This copies the sample corpus into $KB_ROOT and asks one question.
+./examples/try-sample.sh
 
-# Run the full eval (12 rows, ~12 minutes first time, ~30s cached)
-./evals/run.sh --label my-first-run --domain guidance
+# Or ask your own question against the bundled sample:
+./examples/try-sample.sh "What does Marcus Aurelius say about death?"
 ```
 
-The report lands in `evals/reports/my-first-run/<timestamp>/report.md` with per-row scores, judge rationales, recall, and trace data.
+A real-world run looks like this:
+
+```bash
+# Ingest any PDF or text file as a new corpus
+python -m lib.ingestion --input ~/Downloads/my-book.pdf --corpus my-corpus
+
+# Ask the agent a question over it
+ask-expert --domain my-corpus -q "your question here"
+
+# Or run the eval harness against a gold set
+./evals/run.sh --label my-first-run --domain my-corpus
+```
+
+Eval reports land in `evals/reports/<label>/<timestamp>/report.md` with per-row scores, judge rationales, recall, and trace data. Four real reports are checked into [`evals/reports/`](evals/reports/) so you can see the format without running anything.
 
 ## Adding your own corpus
 
