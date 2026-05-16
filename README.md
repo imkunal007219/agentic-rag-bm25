@@ -2,7 +2,7 @@
 
 A working agentic RAG system, plus the eval harness that proves it works.
 
-No vector database. No LangChain. About 200 lines of retrieval code, a small tool-calling agent, and an eval harness with an LLM judge measured against human grades. Three knowledge bases shipped: a missile-guidance textbook, the Géron Hands-On ML book, and Marcus Aurelius's *Meditations*.
+No vector database. No LangChain. About 1,400 lines of Python across the indexer, agent, and ingestion, plus another 600 for the eval harness. An LLM judge measured against human hand-grades. Three knowledge bases shipped: a missile-guidance textbook, the Géron Hands-On ML book, and Marcus Aurelius's *Meditations*.
 
 ## The three numbers
 
@@ -43,8 +43,9 @@ export WORKER_MODEL="kimi-k2.5"
 export ANTHROPIC_API_KEY="sk-ant-..."                  # the judge (only needed for evals)
 export KB_ROOT="$HOME/knowledge-bases"                 # where corpora live
 
-# Try it in 60 seconds against the bundled sample (Meditations, Book II).
-# This copies the sample corpus into $KB_ROOT and asks one question.
+# Try it against the bundled sample (Marcus Aurelius's Meditations, Books I-V,
+# Collier translation, public domain). The script copies the sample corpora
+# into $KB_ROOT and asks the agent one question.
 ./examples/try-sample.sh
 
 # Or ask your own question against the bundled sample:
@@ -114,13 +115,20 @@ agentic-rag-bm25/
 │   ├── expert_agent.py        # Tool-calling agent (search_kb, read_section)
 │   └── ingestion.py           # PDF/TXT → chunked markdown + BM25 index
 ├── ask-expert                 # CLI wrapper for the agent
+├── examples/
+│   ├── sample-books/                  # Bundled public-domain sample corpora
+│   │   ├── meditations/               # Marcus Aurelius, Books I-V (Collier)
+│   │   └── physics/                   # Short Newton's-laws example
+│   └── try-sample.sh                  # One-command quickstart against the sample
 ├── evals/
-│   ├── groundtruth.jsonl              # Guidance corpus gold set, 30 rows
+│   ├── groundtruth.jsonl              # Guidance corpus gold set, 60 rows
 │   ├── groundtruth-ml.jsonl           # Géron ML corpus gold set, 15 rows
 │   ├── groundtruth-meditations.jsonl  # Meditations gold set, 12 rows
 │   ├── calibration.md                 # Judge calibration writeup. Read this first.
 │   ├── notes-meditations-chunking.md  # The negative result
 │   ├── eval_harness/                  # Dataset loader, runner, scorer, report
+│   ├── history/                       # Superseded calibration files, kept for the rubric-evolution story
+│   ├── reports/                       # Four cited eval reports, gitignored otherwise
 │   └── run.sh                         # Convenience wrapper
 ├── setup.sh
 └── requirements.txt
@@ -154,7 +162,9 @@ If you find a real-world corpus where this approach fails in an interesting way,
 
 ## Author
 
-Kunal Bhardwaj. Embedded systems engineer (autonomous drones) moving into applied AI. This repo is part of a 10-day public sprint to ship a portfolio piece I would actually use to argue for a role.
+Kunal Bhardwaj. Embedded systems engineer working on autonomous drones, moving into applied AI engineering. This repo is the public portfolio piece I built to argue for a role in that move.
+
+Full story behind the project, including the four-iteration judge calibration narrative and the negative result on Meditations chunking: [I gave Claude full engineering books to read. Then I built the eval harness to check it wasn't lying to me.](https://medium.com/@kunalbhardwaj598/i-gave-claude-full-engineering-books-to-read-then-built-the-eval-harness-to-check-it-wasnt-lying-e9354bf6fa96)
 
 - LinkedIn: [linkedin.com/in/kunal-bhardwaj-61433818b](https://www.linkedin.com/in/kunal-bhardwaj-61433818b)
 - Email: kunalbhardwaj598@gmail.com
